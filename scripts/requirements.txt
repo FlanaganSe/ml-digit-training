@@ -1,0 +1,8 @@
+# Annotation pipeline dependencies
+# Install into the existing .venv: pip install -r scripts/requirements.txt
+
+openai>=1.60.0         # OpenRouter API (OpenAI-compatible SDK)
+imagehash>=4.3.1       # Perceptual hash dedup
+supervision>=0.25.0    # Dataset management + visualization
+roboflow>=1.1.0        # Roboflow upload API
+python-dotenv>=1.0.0   # .env file loading (optional)

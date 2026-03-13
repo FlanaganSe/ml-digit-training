@@ -1,0 +1,10 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+auto_labels/
+runs/
+frames/
+dataset/
+*.onnx
+.DS_Store
