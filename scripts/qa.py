@@ -7,7 +7,7 @@ from pathlib import Path
 
 import cv2
 
-from scripts.annotate import Detection
+from scripts.annotate import Detection, load_raw_detections
 from scripts.config import CLASS_NAMES
 
 
@@ -86,3 +86,34 @@ def print_class_distribution(results: dict[Path, list[Detection]]) -> None:
     unknown = {k: v for k, v in counts.items() if k not in known}
     if unknown:
         print(f"\nUnknown labels: {unknown}")
+
+
+if __name__ == "__main__":
+    import sys
+
+    from scripts.config import FRAMES_DIR, OUTPUT_DIR
+
+    batch_dir = OUTPUT_DIR / "batch"
+    raw_path = batch_dir / "raw_detections.json"
+
+    if not raw_path.exists():
+        print(
+            f"ERROR: {raw_path} not found.\n"
+            "Run 'python -m scripts.annotate' first."
+        )
+        sys.exit(1)
+
+    results = load_raw_detections(raw_path, FRAMES_DIR)
+
+    # Class distribution
+    print_class_distribution(results)
+
+    # Draw QA images for frames with detections
+    qa_dir = batch_dir / "qa"
+    drawn = 0
+    for frame_path, dets in sorted(results.items(), key=lambda x: x[0].name):
+        if dets and frame_path.exists():
+            draw_detections(frame_path, dets, qa_dir / frame_path.name)
+            drawn += 1
+
+    print(f"\nQA images: {drawn} saved to {qa_dir}")

@@ -1,6 +1,6 @@
 # Model Training Guide
 
-End-to-end guide for training a custom YOLOv11n digit-tile detection model and deploying it into the Superbuilders app. Every step is included — from printing physical tiles to a working model on iPad.
+End-to-end guide for training a custom YOLOv11n tile detection model and deploying it into the Superbuilders app. Covers both digit-only (10-class) and full character (36-class: digits 0-9 + letters A-Z) models.
 
 ---
 
@@ -10,18 +10,17 @@ End-to-end guide for training a custom YOLOv11n digit-tile detection model and d
 2. [Prepare Physical Tiles](#2-prepare-physical-tiles)
 3. [Capture Training Data](#3-capture-training-data)
 4. [Extract Frames from Video](#4-extract-frames-from-video)
-5. [Roboflow: Upload Images](#5-roboflow-upload-images)
-6. [Roboflow: Annotate Images](#6-roboflow-annotate-images)
-7. [Roboflow: Generate Dataset Version](#7-roboflow-generate-dataset-version)
-8. [Roboflow: Export Dataset](#8-roboflow-export-dataset)
-9. [Train the Model](#9-train-the-model)
-10. [Evaluate Training Results](#10-evaluate-training-results)
-11. [Export to ONNX](#11-export-to-onnx)
-12. [Integrate into the App](#12-integrate-into-the-app)
-13. [Test Locally in Browser](#13-test-locally-in-browser)
-14. [Test on iPad / iPhone](#14-test-on-ipad--iphone)
-15. [Deploy](#15-deploy)
-16. [Retraining (Adding More Data)](#16-retraining-adding-more-data)
+5. [Filter Frames](#5-filter-frames)
+6. [Annotate Images](#6-annotate-images)
+7. [Roboflow: Upload, Review, Version](#7-roboflow-upload-review-version)
+8. [Train the Model](#9-train-the-model)
+9. [Evaluate Training Results](#10-evaluate-training-results)
+10. [Export to ONNX](#11-export-to-onnx)
+11. [Integrate into the App](#12-integrate-into-the-app)
+12. [Test Locally in Browser](#13-test-locally-in-browser)
+13. [Test on iPad / iPhone](#14-test-on-ipad--iphone)
+14. [Deploy](#15-deploy)
+15. [Retraining (Adding More Data)](#16-retraining-adding-more-data)
 
 ---
 
@@ -54,7 +53,15 @@ Verify it works:
 yolo version
 ```
 
-### 1c. Create a Roboflow account and project
+### 1c. Install annotation pipeline dependencies
+
+```bash
+cd ~/proj/digit-training
+source .venv/bin/activate
+pip install openai imagehash supervision roboflow python-dotenv
+```
+
+### 1d. Create a Roboflow account and project
 
 1. Go to [app.roboflow.com](https://app.roboflow.com) and sign up (free tier works)
 2. Click **Create New Project**
@@ -63,16 +70,17 @@ yolo version
 5. Annotation group: leave default
 6. Click **Create**
 
-### 1d. Add the 10 digit classes
+### 1e. Add classes
 
-1. In your project, click **Classes & Tags** in the left sidebar
-2. Add 10 classes, one at a time: `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`
+For digit-only (10-class): `0`, `1`, `2`, `3`, `4`, `5`, `6`, `7`, `8`, `9`
+
+For full character (36-class): digits 0-9 plus `A` through `Z` (class IDs 10-35).
 
 ---
 
 ## 2. Prepare Physical Tiles
 
-Print number tiles 0–9. You need at least 2 copies of each digit (for multi-digit answers like 12, 17).
+Print number tiles 0–9 (and letter tiles A-Z if training 36-class). You need at least 2 copies of each digit (for multi-digit answers like 12, 17).
 
 **Specifications:**
 - Size: 3 × 4 inches per tile
@@ -86,66 +94,80 @@ You can design these in any tool (Canva, Google Slides, etc.) and print at home 
 
 ## 3. Capture Training Data
 
-The goal is **50–100 images per digit** (500–1000 total). The fastest method is short videos, not individual photos.
+### Capture device
 
-### What to record
+**Use the iPad that runs the app as the primary capture device.** The camera module, focal length, color profile, and auto-exposure behavior of the deployment device are what the model needs to learn. iPhone footage is useful as supplementary data for domain diversity, but should be <30% of total.
 
-For each digit (0–9), record a **10–15 second video** on your iPhone. During each video, vary:
+### Target volume
 
-- **Angles** — straight on, slight tilt left, slight tilt right, slight tilt forward/back
-- **Lighting** — move to different spots (overhead lamp, natural daylight, slightly dim, side-lit)
-- **Distance** — close up, arm's length, roughly iPad camera distance
-- **Background** — the actual surface you'll play on (table, play mat)
+| Class count | Target per class | Total raw frames |
+|---|---|---|
+| 10 (digits) | 150–300 | 1500–3000 |
+| 36 (digits + letters) | 100–200 | 3600–7200 |
 
-Also record **multi-tile compositions:**
-- Place 2 tiles side by side (like "1" and "3" to form 13)
-- Place 3 tiles in frame at varying distances
-- These are critical — the model must detect individual digits when multiple tiles are present
+### Scene composition targets
 
-Also record **5–10 seconds of empty background** (no tiles at all). These become negative examples that teach the model what "no digit" looks like.
+| Bucket | Description | % of data |
+|---|---|---|
+| Single clean tile | One tile, centered, clear | 40% |
+| Multi-tile | 2-5 tiles with gaps, touching pairs, separated pairs | 40% |
+| Hard negatives | Empty surface, hands, shadows, glare, clutter | 10% |
+| Hard positives | Confusable pairs (6/9, 0/O, 1/I), extreme lighting, edge of frame, far distance | 10% |
 
-### How to record
+### Filming protocol
 
-1. Open the iPhone Camera app
-2. Record in standard 1080p video (default is fine)
-3. Hold the phone roughly where the iPad camera would be during gameplay
-4. Slowly move the tile around, tilt it, shift your hand — keep it natural
-5. Save each video named by digit: `digit_0.MOV`, `digit_1.MOV`, ..., `digit_9.MOV`
-6. Save multi-tile videos as: `multi_01.MOV`, `multi_12.MOV`, etc.
-7. Save empty background video as: `background.MOV`
+Record **many short clips** (10-15 seconds each), not one long video sweep. Keep lighting stable within a clip and change lighting between clips. This gives clean session boundaries for grouped splits.
+
+**Lighting variety** (record each bucket under all of these, in separate clips):
+1. Bright overhead (ceiling light directly above)
+2. Natural daylight (near window)
+3. Warm/dim (lamp, evening)
+4. Side-lit (strong directional light creating shadows)
+
+**Background variety**: Record on 3+ surfaces — the actual play surface, a white surface, a dark surface. The model can learn background shortcuts if all examples of a class are on one surface.
+
+**Confusable-class sessions**: Dedicate filming to confusable pairs placed next to each other:
+- 6 and 9 (underline marks visible)
+- 0 and O (if training 36-class)
+- 1 and I, 8 and B, 5 and S
+
+### Naming convention
+
+Name videos by content for split grouping later:
+
+```
+single_digit0_overhead.MOV      # single tile, digit 0, overhead light
+single_digit0_daylight.MOV      # single tile, digit 0, daylight
+multi_digits_overhead.MOV       # multi-tile digits, overhead light
+multi_letters_dim.MOV           # multi-tile letters, dim light
+negative_empty_overhead.MOV     # empty surface, overhead light
+hard_6v9_sidelit.MOV            # confusable pair, side-lit
+```
 
 ### Transfer videos to your Mac
 
-**AirDrop** each video from your iPhone to your MacBook. They'll land in `~/Downloads/`.
-
-Verify they're there:
-
-```bash
-ls ~/Downloads/digit_*.MOV
-```
+**AirDrop** each video from your iPad to your MacBook. They'll land in `~/Downloads/`.
 
 ---
 
 ## 4. Extract Frames from Video
 
-Each 10-second video at 2 frames per second produces ~20 images. This is much faster than taking individual photos.
+Each 10-second video at 2 frames per second produces ~20 images.
 
 ```bash
 cd ~/proj/digit-training
 
-# Extract frames from all digit videos
-for i in 0 1 2 3 4 5 6 7 8 9; do
-  ffmpeg -i ~/Downloads/digit_$i.MOV -vf fps=2 frames/digit${i}_%04d.jpg
-done
-
-# Extract frames from multi-tile videos (if you have them)
-for f in ~/Downloads/multi_*.MOV; do
+# Extract from all videos at 2fps
+for f in ~/Downloads/*.MOV; do
   name=$(basename "$f" .MOV)
   ffmpeg -i "$f" -vf fps=2 "frames/${name}_%04d.jpg"
 done
 
-# Extract frames from background video (negative examples)
-ffmpeg -i ~/Downloads/background.MOV -vf fps=1 frames/background_%04d.jpg
+# For negative/background videos, 1fps is enough
+for f in ~/Downloads/negative_*.MOV; do
+  name=$(basename "$f" .MOV)
+  ffmpeg -i "$f" -vf fps=1 "frames/${name}_%04d.jpg"
+done
 ```
 
 Check how many frames you got:
@@ -154,73 +176,81 @@ Check how many frames you got:
 ls frames/*.jpg | wc -l
 ```
 
-You should have 200–500+ images. Skim through them in Finder — delete any that are blurry, completely off-frame, or useless.
+---
+
+## 5. Filter Frames
+
+Use the annotation pipeline to remove blurry and near-duplicate frames:
+
+```bash
+cd ~/proj/digit-training
+source .venv/bin/activate
+python -m scripts.filter
+```
+
+This uses Laplacian variance (threshold=3.0) for blur detection and perceptual hashing (hamming distance=8) for deduplication within each video prefix. See `scripts/filter.py` for details.
 
 ---
 
-## 5. Roboflow: Upload Images
+## 6. Annotate Images
 
-1. Go to [app.roboflow.com](https://app.roboflow.com) and open your **digit-tiles** project
-2. Click **Upload Data** in the left sidebar
-3. Drag the entire `~/proj/digit-training/frames/` folder from Finder into the upload zone
-   - Or click **Select Files** and select all the `.jpg` files
-4. Click **Save and Continue**
-5. The images will appear in the **Unassigned** bucket on the Annotate page
+### Automated annotation with Gemini
 
----
+The annotation pipeline uses Gemini Flash Lite via OpenRouter to auto-annotate frames. Set up your API key:
 
-## 6. Roboflow: Annotate Images
+```bash
+echo "OPENROUTER_API_KEY=your_key_here" >> .env
+```
 
-This is the most time-consuming step. You are drawing bounding boxes around every digit in every image and labeling them.
+Run the pipeline scripts in order:
+1. `python -m scripts.filter` — blur + dedup (moves rejected frames to `frames/rejected/`)
+2. `python -m scripts.annotate` — Gemini annotation (saves results to `auto_labels/batch/`)
+3. `python -m scripts.convert` — Gemini JSON → YOLO label format
+4. `python -m scripts.qa` — visual QA + class distribution
+5. `python -m scripts.upload` — upload images + labels to Roboflow
 
-1. Click **Annotate** in the left sidebar
-2. Click the **Unassigned** batch
-3. Select all images → **Assign to: yourself**
-4. Click into the first image to open the annotation editor
+See `scripts/config.py` for the 36-class mapping, annotation prompt, and thresholds.
 
-### For each image:
+### Manual annotation in Roboflow
 
-1. Click the **bounding box tool** (or press `B`)
-2. Draw a tight rectangle around each digit tile in the image
-3. Select the correct class label (`0`, `1`, `2`, ..., `9`)
-4. If there are multiple tiles in the image, draw a box around each one separately
-5. Press **Enter** or the **right arrow** to save and move to the next image
-
-### Speed tips:
-
-- The filename tells you the digit: `digit3_0012.jpg` = it's a `3`
-- Use **keyboard shortcuts** to select classes quickly (check Roboflow's shortcut bar)
-- For single-digit videos, every frame in that batch is the same label — you just need to adjust the box position
-- For background images (no tiles), just skip them — leave them with no annotations. Roboflow treats unannotated images as negative examples.
-- Use Roboflow's **Smart Polygon** or **Label Assist** if available — it can auto-suggest boxes
-
-### When done:
-
-All images should be in the **Dataset** column (annotated images move there automatically after approval). The **Unassigned** and **Annotating** columns should be empty.
+Alternatively, annotate directly in Roboflow's UI — see `scripts/upload.py` for batch upload with pre-computed annotations (`is_prediction=True` for review mode).
 
 ---
 
-## 7. Roboflow: Generate Dataset Version
+## 7. Roboflow: Upload, Review, Version
 
-1. Click **Versions** in the left sidebar
-2. Click **Generate New Version**
+### Upload
 
-### Configure the split:
+```bash
+echo "ROBOFLOW_API_KEY=your_key_here" >> .env
+python -m scripts.upload
+```
 
-- **Train:** 70%
-- **Valid:** 20%
-- **Test:** 10%
+### Review annotations in Roboflow UI
 
-Roboflow shuffles and splits automatically.
+Auto-annotations appear as suggestions. Accept correct ones, fix incorrect ones.
 
-### Configure preprocessing:
+### Generate dataset version
 
-- **Auto-Orient:** On (applied by default)
-- **Resize:** Stretch to **640×640** (matches YOLO input size)
+**CRITICAL SETTINGS:**
 
-### Configure augmentations:
+#### Split: grouped by video source, NOT random
 
-**Enable these** (they multiply your dataset and improve generalization):
+Roboflow's random split leaks near-duplicate frames across train/val/test (sequential frames from the same video are nearly identical). Instead:
+- Assign entire video clips to splits manually in Roboflow
+- Or split locally before uploading
+- Target: 70% train / 20% valid / 10% test
+- Ensure val/test contain frames from multiple video sources and lighting conditions
+- Ensure val/test contain all class types you're training on
+
+#### Preprocessing
+
+- **Auto-Orient:** On
+- **Resize:** **Fit (white edges)** to 640×640 — **NOT Stretch**. Stretching 9:16 portrait frames to 1:1 distorts character proportions.
+
+#### Augmentations (training set only)
+
+**Enable these:**
 
 | Augmentation | Setting |
 |---|---|
@@ -230,33 +260,25 @@ Roboflow shuffles and splits automatically.
 | Noise | up to 3% |
 | Rotation | -10° to +10° |
 
-**Do NOT enable these** (they create unrealistic digit orientations):
+**Do NOT enable these** (they create invalid character representations):
 
 | Do NOT enable | Reason |
 |---|---|
-| Horizontal Flip | A flipped "3" is not a valid "3" |
-| Vertical Flip | Upside-down digits are nonsensical |
+| Horizontal Flip | A flipped "3", "7", "J", "Z" etc. are not valid |
+| Vertical Flip | Upside-down characters are nonsensical |
 | 90° Rotation | Kids don't rotate tiles 90° |
-| Cutout | Can obscure the digit entirely |
+| Cutout | Can obscure the character entirely |
 
-### Generate:
+**Ensure augmentations are applied to training images only**, not validation or test. Augmented val/test sets inflate metrics.
 
-Click **Generate**. Roboflow creates an augmented version of your dataset. The total image count will be 2–3× your original count.
+### Export
 
----
-
-## 8. Roboflow: Export Dataset
-
-1. Click **Versions** → select your generated version
-2. Click **Download Dataset**
-3. Format: **YOLOv8** (this is the folder structure Ultralytics expects)
-4. Click **Download zip**
-5. The zip downloads to `~/Downloads/`
-
-Extract it:
+1. Format: **YOLOv8** (the folder structure Ultralytics expects)
+2. Download zip and extract:
 
 ```bash
 cd ~/proj/digit-training
+rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 ```
 
@@ -265,14 +287,11 @@ Verify the structure:
 ```bash
 ls dataset/
 # Should contain: data.yaml  train/  valid/  test/
-
-ls dataset/train/
-# Should contain: images/  labels/
 ```
 
 ---
 
-## 9. Train the Model
+## 8. Train the Model
 
 ```bash
 cd ~/proj/digit-training
@@ -281,9 +300,14 @@ source .venv/bin/activate
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=50 \
+  epochs=100 \
   imgsz=640 \
-  device=mps
+  device=mps \
+  fliplr=0.0 \
+  flipud=0.0 \
+  degrees=10 \
+  hsv_v=0.5 \
+  close_mosaic=10
 ```
 
 **What these flags mean:**
@@ -292,52 +316,51 @@ yolo detect train \
 |---|---|---|
 | `data` | `dataset/data.yaml` | Points to your exported Roboflow dataset |
 | `model` | `yolo11n.pt` | Start from pretrained YOLOv11 nano (auto-downloads first time) |
-| `epochs` | `50` | Number of training passes (increase to 100–150 if results are poor) |
+| `epochs` | `100` | Number of training passes. Check loss curves — increase if still improving. |
 | `imgsz` | `640` | Input resolution — matches what the app uses |
 | `device` | `mps` | Use Apple Silicon GPU (Metal Performance Shaders) |
+| `fliplr` | `0.0` | **Disable horizontal flip.** YOLO default is 0.5 — flipped characters are invalid training data. |
+| `flipud` | `0.0` | Disable vertical flip (already default, but explicit for safety) |
+| `degrees` | `10` | Online rotation augmentation ±10° (applied dynamically each epoch, unlike Roboflow's static copies) |
+| `hsv_v` | `0.5` | Brightness variation ±50% for lighting robustness (default 0.4) |
+| `close_mosaic` | `10` | Disable mosaic augmentation for last 10 epochs (improves final precision) |
 
-**Training takes ~15–30 minutes on M3 Pro.**
+### Training time estimates (M3 Pro)
 
-The terminal shows live progress: epoch number, loss values, and mAP metrics on each validation pass.
+| Dataset size | Classes | Time per epoch | 50 epochs | 100 epochs |
+|---|---|---|---|---|
+| ~500 images | 10 | ~30s | ~25 min | ~50 min |
+| ~3700 images | 36 | ~4.5 min | ~3.8 hours | ~7.5 hours |
 
-Results are saved to: `runs/detect/train/`
-
-> **Note:** If you train multiple times, subsequent runs go to `runs/detect/train2/`, `train3/`, etc. The most recent is always the highest number.
+Results are saved to: `runs/detect/train/` (or `train2/`, `train3/`, etc.)
 
 ---
 
-## 10. Evaluate Training Results
+## 9. Evaluate Training Results
 
 ### Check the metrics
-
-Open the results plot:
 
 ```bash
 open runs/detect/train/results.png
 ```
 
-This shows loss curves and mAP over time. Key metrics:
+Key metrics:
 
 | Metric | Target | Meaning |
 |---|---|---|
-| **mAP50** | > 0.80 | Mean Average Precision at 50% IoU — primary quality metric |
+| **mAP50** | > 0.85 | Mean Average Precision at 50% IoU — primary quality metric |
 | **mAP50-95** | > 0.50 | Stricter metric across multiple IoU thresholds |
 | **box_loss** | Decreasing | Bounding box regression loss — should trend down |
 | **cls_loss** | Decreasing | Classification loss — should trend down |
 
-### Visual sanity check
+**Important:** These metrics are only meaningful if your validation set is properly constructed (grouped split, representative of all classes, not augmented). If val only contains a few classes or one surface, the numbers lie.
 
-Run predictions on validation images to see the model in action:
+### Visual sanity check
 
 ```bash
 yolo detect predict \
   model=runs/detect/train/weights/best.pt \
   source=dataset/valid/images
-```
-
-This saves annotated images (with bounding boxes drawn) to `runs/detect/predict/`. Open them:
-
-```bash
 open runs/detect/predict/
 ```
 
@@ -352,15 +375,15 @@ open runs/detect/predict/
 | Problem | Fix |
 |---|---|
 | Low mAP (< 0.60) | More training data, more epochs (100–150), check annotations for errors |
-| Confuses similar digits (6/9, 1/7) | Add more varied examples of those specific digits |
-| False positives on background | Add more negative examples (empty background images) |
-| Boxes are offset/wrong size | Check that annotations are tight around tiles, not sloppy |
+| Confuses similar characters (6/9, 1/I, 0/O) | Add more varied examples of those specific characters, especially confusable pairs side by side |
+| False positives on background | Add more negative examples (empty background, hands, shadows) |
+| Boxes are offset/wrong size | Check that annotations are tight around tiles |
+| Good on one surface, bad on another | Need more background/surface diversity in training data |
+| Good in one lighting, bad in another | Need more lighting diversity across filming sessions |
 
 ---
 
-## 11. Export to ONNX
-
-Once you're satisfied with the model quality:
+## 10. Export to ONNX
 
 ```bash
 cd ~/proj/digit-training
@@ -377,8 +400,6 @@ yolo export \
 
 This creates `runs/detect/train/weights/best.onnx` (~10 MB).
 
-**What these flags mean:**
-
 | Flag | Value | Meaning |
 |---|---|---|
 | `format` | `onnx` | Export for ONNX Runtime (used in browser via WASM) |
@@ -387,31 +408,37 @@ This creates `runs/detect/train/weights/best.onnx` (~10 MB).
 | `half` | `False` | Full float32 precision (half/float16 not supported by WASM) |
 | `batch` | `1` | Single image inference (the app sends one frame at a time) |
 
+**Expected output tensor shapes:**
+- 10-class: `[1, 14, 8400]` — 4 box coords + 10 class scores
+- 36-class: `[1, 40, 8400]` — 4 box coords + 36 class scores
+
 ---
 
-## 12. Integrate into the App
+## 11. Integrate into the App
 
-Copy the exported model into the Superbuilders project:
+**Use a versioned filename** to bust the service worker cache:
 
 ```bash
-cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-v5.onnx
 ```
 
-The app loads this model from `public/models/`. The inference worker reads class count from the ONNX output tensor dimensions automatically — no code change needed when swapping models.
+Then update the model path in `~/proj/superbuilders/src/cv/onnx-recognition.ts` to match the new filename.
 
-**Expected output tensor shape:** `[1, 14, 8400]` — where 14 = 4 box coordinates + 10 class scores, and 8400 = number of anchor points at 640×640.
+The CacheFirst service worker will serve the old cached model forever if the filename doesn't change. Always use a new filename when deploying a retrained model.
+
+The inference worker reads class count from the ONNX output tensor dimensions automatically — no other code change needed when swapping models.
 
 ### Model size check
 
 ```bash
-ls -lh ~/proj/superbuilders/public/models/digit-tiles.onnx
+ls -lh ~/proj/superbuilders/public/models/digit-tiles-v5.onnx
 ```
 
 Should be ~10–12 MB. The PWA caches models up to 30 MB, so this is fine.
 
 ---
 
-## 13. Test Locally in Browser
+## 12. Test Locally in Browser
 
 ```bash
 cd ~/proj/superbuilders
@@ -422,7 +449,7 @@ Open `https://localhost:5173?debug=true` in Chrome for initial debugging. **Impo
 
 ### What to check:
 
-1. **Network tab:** Does `digit-tiles.onnx` load with status 200 (or 304)?
+1. **Network tab:** Does the model file load with status 200 (or 304)?
 2. **Network tab:** Does `ort-wasm-simd-threaded.mjs` and `.wasm` load without 404?
 3. **Console:** No red errors about WASM, SharedArrayBuffer, or ORT?
 4. **Debug HUD** (bottom-left overlay): Does it show model loaded, inference latency, detections?
@@ -440,7 +467,7 @@ Add `?recognition=mock` to the URL to use keyboard input instead. Type digit key
 
 ---
 
-## 14. Test on iPad / iPhone
+## 13. Test on iPad / iPhone
 
 ### Start the tunnel
 
@@ -484,7 +511,7 @@ To see the console/network from your phone on your Mac:
 
 ---
 
-## 15. Deploy
+## 14. Deploy
 
 Once everything works locally and on device:
 
@@ -496,22 +523,23 @@ pnpm preview  # Verify the production build locally
 
 Push to GitHub and the CI/CD pipeline deploys to Cloudflare Pages automatically.
 
-The PWA service worker caches `digit-tiles.onnx` with a CacheFirst strategy, so after the first load on a device, the model loads from cache instantly on subsequent visits.
+The PWA service worker caches the model with a CacheFirst strategy, so after the first load on a device, the model loads from cache instantly on subsequent visits. This is why **versioned model filenames are essential** — without a new filename, cached devices never get the updated model.
 
 ---
 
-## 16. Retraining (Adding More Data)
+## 15. Retraining (Adding More Data)
 
 When you need to improve the model (misdetections, new tile designs, different lighting conditions):
 
 ### Add new training data
 
-1. Record new videos of the problem cases
+1. Record new videos following the capture protocol in §3
 2. Extract frames: `ffmpeg -i new_video.MOV -vf fps=2 frames/new_%04d.jpg`
-3. Upload to the same Roboflow project (Upload Data → drag frames)
-4. Annotate the new images
-5. Generate a **new version** in Roboflow (it includes all previous + new images)
-6. Export as YOLOv8 and download
+3. Run the filter pipeline: `python -m scripts.filter`
+4. Annotate (automated or manual)
+5. Upload to the same Roboflow project
+6. Generate a **new version** in Roboflow with proper grouped splits
+7. Export as YOLOv8 and download
 
 ### Retrain
 
@@ -523,60 +551,104 @@ source .venv/bin/activate
 rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 
-# Train again (starts from pretrained weights, not your previous run)
+# Train with corrected args
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=50 \
+  epochs=100 \
   imgsz=640 \
-  device=mps
+  device=mps \
+  fliplr=0.0 \
+  flipud=0.0 \
+  degrees=10 \
+  hsv_v=0.5 \
+  close_mosaic=10
 
 # Evaluate
 yolo detect predict \
-  model=runs/detect/train*/weights/best.pt \
+  model=runs/detect/train/weights/best.pt \
   source=dataset/valid/images
 
-# Export and deploy
+# Export and deploy (use versioned filename!)
 yolo export \
-  model=runs/detect/train*/weights/best.pt \
+  model=runs/detect/train/weights/best.pt \
   format=onnx \
   imgsz=640 \
   opset=17 \
   half=False \
   batch=1
 
-cp runs/detect/train*/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-vN.onnx
+# Update the model path in src/cv/onnx-recognition.ts
 ```
-
-> **Note:** Each training run creates a new `runs/detect/trainN/` directory. Use the latest one, or specify the exact path.
 
 ### Tips for iterative improvement
 
-- **Confusing 6 and 9?** Add more examples of each at various rotations
+- **Confusing 6 and 9?** Add more examples of each, filmed next to each other
 - **Missing tiles at distance?** Record videos from farther away
-- **False positives on hands/table?** Add more background-only images
+- **False positives on hands/table?** Add more negative examples (empty background, hands, shadows)
 - **Poor in certain lighting?** Record in that specific lighting condition
+- **Good on one surface, bad on another?** Record on multiple surfaces
 - Focus on the failure cases — don't just add more of what already works
+- Check the confusion matrix (`runs/detect/train/confusion_matrix.png`) to identify which classes are being confused
+
+---
+
+## Known Pitfalls
+
+| Pitfall | What happens | How to avoid |
+|---|---|---|
+| `fliplr` not set to 0.0 | YOLO default is 0.5 — mirrored "3", "7", "9", "J", "Z" corrupt training | Always pass `fliplr=0.0` explicitly |
+| Roboflow resize set to "Stretch" | 9:16 portrait frames squashed to 1:1, distorting characters | Use "Fit (white edges)" |
+| Random Roboflow split | Sequential video frames leak across train/val/test, inflating metrics | Split by video source/session |
+| Augmented val/test sets | Near-duplicate augmented copies inflate mAP | Apply augmentation to training set only |
+| Same model filename on deploy | CacheFirst service worker serves stale model | Use versioned filenames |
+| Training on iPhone, deploying on iPad | Domain gap from different cameras | Film primarily on the deployment device |
+| Insufficient negatives | False positives on hands, surfaces, clutter | Include 10% hard negatives |
+| Severe class imbalance | Rare classes have low recall | Balance with targeted filming |
 
 ---
 
 ## Quick Reference: Full Command Sequence
 
-For when you just need the commands without explanation:
-
 ```bash
 # === EXTRACT FRAMES ===
 cd ~/proj/digit-training
-for i in 0 1 2 3 4 5 6 7 8 9; do
-  ffmpeg -i ~/Downloads/digit_$i.MOV -vf fps=2 frames/digit${i}_%04d.jpg
+for f in ~/Downloads/*.MOV; do
+  name=$(basename "$f" .MOV)
+  ffmpeg -i "$f" -vf fps=2 "frames/${name}_%04d.jpg"
 done
 
-# === AFTER ROBOFLOW ANNOTATION + EXPORT ===
+# === FILTER ===
+source .venv/bin/activate
+python -m scripts.filter
+
+# === ANNOTATE (automated) ===
+# Ensure OPENROUTER_API_KEY is in .env
+python -m scripts.annotate
+python -m scripts.convert
+python -m scripts.qa
+
+# === UPLOAD TO ROBOFLOW ===
+# Ensure ROBOFLOW_API_KEY is in .env
+python -m scripts.upload
+
+# === AFTER ROBOFLOW REVIEW + EXPORT ===
+rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 
 # === TRAIN ===
-source .venv/bin/activate
-yolo detect train data=dataset/data.yaml model=yolo11n.pt epochs=50 imgsz=640 device=mps
+yolo detect train \
+  data=dataset/data.yaml \
+  model=yolo11n.pt \
+  epochs=100 \
+  imgsz=640 \
+  device=mps \
+  fliplr=0.0 \
+  flipud=0.0 \
+  degrees=10 \
+  hsv_v=0.5 \
+  close_mosaic=10
 
 # === EVALUATE ===
 yolo detect predict model=runs/detect/train/weights/best.pt source=dataset/valid/images
@@ -585,7 +657,8 @@ open runs/detect/train/results.png
 
 # === EXPORT + DEPLOY ===
 yolo export model=runs/detect/train/weights/best.pt format=onnx imgsz=640 opset=17 half=False batch=1
-cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-vN.onnx
+# Update model path in src/cv/onnx-recognition.ts
 
 # === TEST ON DEVICE ===
 cd ~/proj/superbuilders

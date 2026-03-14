@@ -75,3 +75,33 @@ def upload_to_roboflow(
             on_progress(i, len(frames_to_upload), frame_path.name, True)
 
     return uploaded
+
+
+if __name__ == "__main__":
+    import sys
+
+    batch_dir = OUTPUT_DIR / "batch"
+    labels_dir = batch_dir / "labels"
+
+    if not labels_dir.exists() or not any(labels_dir.glob("*.txt")):
+        print(
+            f"ERROR: No label files in {labels_dir}.\n"
+            "Run 'python -m scripts.convert' first."
+        )
+        sys.exit(1)
+
+    label_count = len(list(labels_dir.glob("*.txt")))
+    print(f"Uploading {label_count} frames to Roboflow ({WORKSPACE}/{PROJECT})")
+    print(f"  Batch: v2_fresh\n")
+
+    def _progress(i: int, total: int, name: str, success: bool) -> None:
+        print(f"  [{i + 1}/{total}] {name}")
+
+    uploaded = upload_to_roboflow(
+        frames_dir=FRAMES_DIR,
+        labels_dir=labels_dir,
+        batch_name="v2_fresh",
+        on_progress=_progress,
+    )
+
+    print(f"\nUploaded {uploaded} frames to Roboflow")

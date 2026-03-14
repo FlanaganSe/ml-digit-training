@@ -127,6 +127,58 @@ def annotate_frame(
     return detections
 
 
+def save_raw_detections(
+    results: dict[Path, list[Detection]],
+    output_path: Path,
+) -> None:
+    """Serialize annotation results to JSON for downstream pipeline steps.
+
+    Format: {filename: [{label, box_2d: [y_min, x_min, y_max, x_max]}, ...]}
+    """
+    raw: dict[str, list[dict]] = {}
+    for path, dets in sorted(results.items(), key=lambda x: x[0].name):
+        raw[path.name] = [
+            {"label": d.label, "box_2d": [d.y_min, d.x_min, d.y_max, d.x_max]}
+            for d in dets
+        ]
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(raw, indent=2))
+
+
+def load_raw_detections(
+    input_path: Path,
+    frames_dir: Path,
+) -> dict[Path, list[Detection]]:
+    """Deserialize annotation results from JSON saved by save_raw_detections().
+
+    Returns dict mapping frame paths to validated Detection lists.
+    """
+    raw = json.loads(input_path.read_text())
+    results: dict[Path, list[Detection]] = {}
+    dropped = 0
+    for filename, dets_raw in raw.items():
+        frame_path = frames_dir / filename
+        detections = []
+        for d in dets_raw:
+            box = d["box_2d"]
+            det = Detection(
+                label=d["label"].upper(),
+                y_min=box[0],
+                x_min=box[1],
+                y_max=box[2],
+                x_max=box[3],
+            )
+            if det.is_valid:
+                detections.append(det)
+            else:
+                dropped += 1
+                print(f"  WARNING: dropped invalid detection in {filename}: {d}")
+        results[frame_path] = detections
+    if dropped:
+        print(f"  WARNING: {dropped} invalid detection(s) dropped during load")
+    return results
+
+
 def annotate_batch(
     frames: list[Path],
     *,
@@ -160,3 +212,61 @@ def annotate_batch(
             time.sleep(delay)
 
     return results
+
+
+if __name__ == "__main__":
+    import sys
+
+    from scripts.config import FRAMES_DIR, OUTPUT_DIR
+
+    batch_dir = OUTPUT_DIR / "batch"
+    raw_path = batch_dir / "raw_detections.json"
+
+    # Guard: abort if batch/ already has results (non-idempotent)
+    if raw_path.exists():
+        print(
+            f"ERROR: {raw_path} already exists from a previous run.\n"
+            "Delete it before re-running, or use a different batch directory."
+        )
+        sys.exit(1)
+
+    frames = sorted(FRAMES_DIR.glob("*.jpg"))
+    if not frames:
+        print(f"No .jpg frames found in {FRAMES_DIR}")
+        sys.exit(1)
+
+    print(f"Annotating {len(frames)} frames using {OPENROUTER_MODEL}")
+    print(f"Output: {batch_dir}\n")
+
+    def _progress(i: int, total: int, path: Path, dets: list[Detection]) -> None:
+        print(f"  [{i + 1}/{total}] {path.name}: {len(dets)} detections")
+
+    start = time.time()
+    results = annotate_batch(frames, on_progress=_progress)
+    elapsed = time.time() - start
+
+    # Save results for downstream scripts
+    save_raw_detections(results, raw_path)
+
+    # Save frame list for reproducibility
+    (batch_dir / "frames.txt").write_text(
+        "\n".join(str(f) for f in sorted(results.keys()))
+    )
+
+    total_dets = sum(len(dets) for dets in results.values())
+    empty = sum(1 for dets in results.values() if not dets)
+
+    print(f"\nCompleted in {elapsed:.1f}s")
+    print(f"  Frames:     {len(results):>5}")
+    print(f"  Detections: {total_dets:>5}")
+    print(f"  Empty:      {empty:>5}")
+
+    # Warn if many frames are empty — may indicate API failures (see M4)
+    if len(results) > 0 and empty / len(results) > 0.10:
+        print(
+            f"\n  WARNING: {empty / len(results) * 100:.0f}% of frames have no detections.\n"
+            "  This may indicate API errors. Check ERROR lines above.\n"
+            "  Delete the output and re-run if needed."
+        )
+
+    print(f"\nSaved to {raw_path}")

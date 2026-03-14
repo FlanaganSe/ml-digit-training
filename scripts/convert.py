@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scripts.annotate import Detection
+from scripts.annotate import Detection, load_raw_detections
 
 
 def detection_to_yolo(det: Detection) -> str | None:
@@ -53,3 +53,31 @@ def write_yolo_labels(
         count += 1
 
     return count
+
+
+if __name__ == "__main__":
+    import sys
+
+    from scripts.config import FRAMES_DIR, OUTPUT_DIR
+
+    batch_dir = OUTPUT_DIR / "batch"
+    raw_path = batch_dir / "raw_detections.json"
+
+    if not raw_path.exists():
+        print(
+            f"ERROR: {raw_path} not found.\n"
+            "Run 'python -m scripts.annotate' first."
+        )
+        sys.exit(1)
+
+    results = load_raw_detections(raw_path, FRAMES_DIR)
+
+    labels_dir = batch_dir / "labels"
+    count = write_yolo_labels(results, labels_dir)
+
+    total_dets = sum(len(dets) for dets in results.values())
+    empty = sum(1 for dets in results.values() if not dets)
+
+    print(f"Converted {count} frames → {labels_dir}")
+    print(f"  Detections: {total_dets:>5}")
+    print(f"  Empty:      {empty:>5}")
