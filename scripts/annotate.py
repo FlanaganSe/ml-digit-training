@@ -145,6 +145,19 @@ def save_raw_detections(
     output_path.write_text(json.dumps(raw, indent=2))
 
 
+def save_annotation_errors(
+    errors: dict[Path, str],
+    output_path: Path,
+) -> None:
+    """Save annotation errors to JSON for debugging and retry.
+
+    Format: {filename: error_message}
+    """
+    raw = {path.name: msg for path, msg in sorted(errors.items(), key=lambda x: x[0].name)}
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(json.dumps(raw, indent=2))
+
+
 def load_raw_detections(
     input_path: Path,
     frames_dir: Path,
@@ -185,33 +198,54 @@ def annotate_batch(
     model: str = OPENROUTER_MODEL,
     delay: float = 0.15,
     on_progress: None | callable = None,
-) -> dict[Path, list[Detection]]:
-    """Annotate a batch of frames. Returns dict of path → detections.
+) -> tuple[dict[Path, list[Detection]], dict[Path, str]]:
+    """Annotate a batch of frames.
+
+    Returns:
+        (results, errors) where:
+        - results: dict of path → detections (successful frames only)
+        - errors: dict of path → error message (failed frames only)
+
+    Errored frames are excluded from results so downstream steps
+    (convert, upload) never produce empty label files for API failures.
+    Each failed frame gets one retry with a 2s backoff before being
+    recorded as an error.
 
     Args:
         frames: list of image paths
         model: OpenRouter model ID
         delay: seconds between API calls (rate limit courtesy)
-        on_progress: optional callback(index, total, path, detections)
+        on_progress: optional callback(index, total, path, detections_or_none)
+            detections is None when the frame errored
     """
     client = _create_client()
     results: dict[Path, list[Detection]] = {}
+    errors: dict[Path, str] = {}
 
     for i, frame in enumerate(frames):
+        detections: list[Detection] | None = None
         try:
             detections = annotate_frame(frame, client=client, model=model)
-            results[frame] = detections
         except Exception as e:
-            print(f"  ERROR on {frame.name}: {e}")
-            results[frame] = []
+            # Single retry with backoff for transient errors
+            print(f"  WARN on {frame.name}: {e} — retrying in 2s...")
+            time.sleep(2)
+            try:
+                detections = annotate_frame(frame, client=client, model=model)
+            except Exception as e2:
+                print(f"  ERROR on {frame.name}: {e2}")
+                errors[frame] = str(e2)
+
+        if detections is not None:
+            results[frame] = detections
 
         if on_progress:
-            on_progress(i, len(frames), frame, results[frame])
+            on_progress(i, len(frames), frame, detections)
 
         if i < len(frames) - 1:
             time.sleep(delay)
 
-    return results
+    return results, errors
 
 
 if __name__ == "__main__":
@@ -238,35 +272,48 @@ if __name__ == "__main__":
     print(f"Annotating {len(frames)} frames using {OPENROUTER_MODEL}")
     print(f"Output: {batch_dir}\n")
 
-    def _progress(i: int, total: int, path: Path, dets: list[Detection]) -> None:
-        print(f"  [{i + 1}/{total}] {path.name}: {len(dets)} detections")
+    def _progress(i: int, total: int, path: Path, dets: list[Detection] | None) -> None:
+        if dets is None:
+            print(f"  [{i + 1}/{total}] {path.name}: FAILED")
+        else:
+            print(f"  [{i + 1}/{total}] {path.name}: {len(dets)} detections")
 
     start = time.time()
-    results = annotate_batch(frames, on_progress=_progress)
+    results, errors = annotate_batch(frames, on_progress=_progress)
     elapsed = time.time() - start
 
-    # Save results for downstream scripts
+    # Save errors separately for debugging/retry
+    if errors:
+        errors_path = batch_dir / "annotation_errors.json"
+        save_annotation_errors(errors, errors_path)
+
+    # Abort if no frames succeeded — don't write empty results that block re-runs
+    if not results:
+        print(f"\nAll {len(errors)} frames failed. No results saved.")
+        print("Fix the errors above and re-run.")
+        sys.exit(1)
+
+    # Save successful results for downstream scripts
     save_raw_detections(results, raw_path)
 
-    # Save frame list for reproducibility
+    # Save frame list for reproducibility (successful frames only)
     (batch_dir / "frames.txt").write_text(
         "\n".join(str(f) for f in sorted(results.keys()))
     )
 
     total_dets = sum(len(dets) for dets in results.values())
+    with_dets = sum(1 for dets in results.values() if dets)
     empty = sum(1 for dets in results.values() if not dets)
 
     print(f"\nCompleted in {elapsed:.1f}s")
-    print(f"  Frames:     {len(results):>5}")
+    print(f"  Annotated:  {len(results):>5} ({with_dets} with detections, {empty} empty)")
     print(f"  Detections: {total_dets:>5}")
-    print(f"  Empty:      {empty:>5}")
+    print(f"  Failed:     {len(errors):>5}")
 
-    # Warn if many frames are empty — may indicate API failures (see M4)
-    if len(results) > 0 and empty / len(results) > 0.10:
-        print(
-            f"\n  WARNING: {empty / len(results) * 100:.0f}% of frames have no detections.\n"
-            "  This may indicate API errors. Check ERROR lines above.\n"
-            "  Delete the output and re-run if needed."
-        )
+    if errors:
+        print(f"\n  {len(errors)} frame(s) FAILED — excluded from training data:")
+        for path in sorted(errors.keys(), key=lambda p: p.name):
+            print(f"    {path.name}: {errors[path]}")
+        print(f"\n  Errors saved to {batch_dir / 'annotation_errors.json'}")
 
     print(f"\nSaved to {raw_path}")
