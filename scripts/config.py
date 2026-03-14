@@ -47,7 +47,7 @@ OPENROUTER_MODEL_FALLBACK_2: Final = "google/gemini-2.5-flash"
 
 # ── Annotation Thresholds ────────────────────────────────────────────────────
 
-BLUR_THRESHOLD: Final = 3.0  # Laplacian variance below this = too blurry (calibrated on actual frames)
+BLUR_THRESHOLD: Final = 1.0  # Laplacian variance below this = too blurry (recalibrated: white surfaces have low texture)
 DEDUP_HASH_THRESHOLD: Final = 8  # perceptual hash hamming distance
 
 YOLO_HIGH_CONFIDENCE: Final = 0.70  # YOLO detections above this = auto-accept
