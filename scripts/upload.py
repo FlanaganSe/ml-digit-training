@@ -25,7 +25,7 @@ def upload_to_roboflow(
     labels_dir: Path | None = None,
     *,
     batch_name: str = "auto_annotated_v1",
-    is_prediction: bool = True,
+    is_prediction: bool = False,
     on_progress: callable | None = None,
 ) -> int:
     """Upload images + YOLO labels to Roboflow.
