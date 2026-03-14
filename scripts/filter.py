@@ -49,7 +49,7 @@ def deduplicate(
     # Group by video prefix to only dedup within same video
     prefix_groups: dict[str, list[Path]] = {}
     for f in sorted(frames):
-        prefix = _video_prefix(f)
+        prefix = video_prefix(f)
         prefix_groups.setdefault(prefix, []).append(f)
 
     kept: list[Path] = []
@@ -68,7 +68,7 @@ def deduplicate(
     return sorted(kept), sorted(removed)
 
 
-def _video_prefix(path: Path) -> str:
+def video_prefix(path: Path) -> str:
     """Extract video prefix from frame filename.
 
     numbers_0001.jpg → 'numbers'
@@ -185,9 +185,9 @@ if __name__ == "__main__":
     prefix_total: dict[str, int] = defaultdict(int)
     prefix_clean: dict[str, int] = defaultdict(int)
     for f in all_frames:
-        prefix_total[_video_prefix(f)] += 1
+        prefix_total[video_prefix(f)] += 1
     for f in clean:
-        prefix_clean[_video_prefix(f)] += 1
+        prefix_clean[video_prefix(f)] += 1
 
     high_rejection = []
     for prefix in sorted(prefix_total):
