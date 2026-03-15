@@ -1,6 +1,6 @@
-# digit-training
+# Tile Character Detection — Training Pipeline
 
-Training pipeline for a custom **YOLOv11n** object detection model that recognizes **digits (0-9) and letters (A-Z)** on physical tiles. The model runs in-browser via ONNX Runtime WASM, powering real-time tile detection in the [Superbuilders](https://github.com/seanflanagan/superbuilders) iPad app.
+Training pipeline for a **YOLOv11n** object detection model that recognizes **36 alphanumeric characters (0-9, A-Z)** on physical letter tiles. The model exports to ONNX (~10 MB) and runs in-browser via ONNX Runtime WASM, powering real-time tile detection in the [Superbuilders](https://github.com/seanflanagan/superbuilders) iPad app.
 
 ## Results
 
