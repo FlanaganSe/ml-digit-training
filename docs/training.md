@@ -81,7 +81,7 @@ yolo version
 ```bash
 cd ~/proj/digit-training
 source .venv/bin/activate
-pip install openai imagehash supervision roboflow python-dotenv
+pip install -r scripts/requirements.txt
 ```
 
 ### 1d. Create a Roboflow account and project
@@ -211,7 +211,7 @@ source .venv/bin/activate
 python -m scripts.filter
 ```
 
-This uses Laplacian variance (threshold=3.0) for blur detection and perceptual hashing (hamming distance=8) for deduplication within each video prefix. See `scripts/filter.py` for details.
+This uses Laplacian variance (threshold=1.0, recalibrated for white-surface tiles) for blur detection and perceptual hashing (hamming distance=8) for deduplication within each video prefix. See `scripts/filter.py` for details.
 
 ---
 
@@ -236,7 +236,7 @@ See `scripts/config.py` for the 36-class mapping, annotation prompt, and thresho
 
 ### Manual annotation in Roboflow
 
-Alternatively, annotate directly in Roboflow's UI — see `scripts/upload.py` for batch upload with pre-computed annotations (`is_prediction=True` for review mode).
+Alternatively, annotate directly in Roboflow's UI. The upload script uses `is_prediction=False` so annotations go directly into the dataset (not into annotation review jobs, which are excluded from dataset version generation).
 
 ---
 
@@ -251,20 +251,17 @@ python -m scripts.upload
 
 ### Review annotations in Roboflow UI
 
-Auto-annotations appear as suggestions. Accept correct ones, fix incorrect ones.
+With `is_prediction=False`, annotations land as ground-truth labels (not review suggestions). Use Roboflow's label editor to inspect them and fix any errors — incorrect class labels, misaligned bounding boxes, or missed detections.
 
 ### Generate dataset version
 
 **CRITICAL SETTINGS:**
 
-#### Split: grouped by video source, NOT random
+#### Split: do NOT split in Roboflow
 
-Roboflow's random split leaks near-duplicate frames across train/val/test (sequential frames from the same video are nearly identical). Instead:
-- Assign entire video clips to splits manually in Roboflow
-- Or split locally before uploading
-- Target: 70% train / 20% valid / 10% test
-- Ensure val/test contain frames from multiple video sources and lighting conditions
-- Ensure val/test contain all class types you're training on
+Roboflow's random split leaks near-duplicate frames across train/val/test (sequential frames from the same video are nearly identical). Instead, **let Roboflow assign all images to the training set** — we split locally after export using `scripts/split.py`, which groups by video prefix so all frames from one clip stay in the same split.
+
+Target: 70% train / 20% valid / 10% test, with all 36 classes covered in every split.
 
 #### Preprocessing
 
@@ -273,15 +270,14 @@ Roboflow's random split leaks near-duplicate frames across train/val/test (seque
 
 #### Augmentations (training set only)
 
-**Enable these:**
+**Enable these** (settings used for train3 / v5 export, 4x augmentation multiplier):
 
 | Augmentation | Setting |
 |---|---|
-| Brightness | -15% to +15% |
+| Brightness | -23% to +23% |
 | Exposure | -10% to +10% |
-| Blur | up to 1.5px |
-| Noise | up to 3% |
-| Rotation | -10° to +10° |
+| Gaussian blur | up to 3.6px |
+| Salt and pepper noise | ~0.6% of pixels |
 
 **Do NOT enable these** (they create invalid character representations):
 
@@ -294,9 +290,9 @@ Roboflow's random split leaks near-duplicate frames across train/val/test (seque
 
 **Ensure augmentations are applied to training images only**, not validation or test. Augmented val/test sets inflate metrics.
 
-**Why Roboflow augmentation is required:** With 36 classes and ~1200 raw images (~33 per class), the dataset is too small for effective training without augmentation. A 3x augmentation multiplier produces ~3600-5000 training images, which is sufficient. YOLO also applies its own online augmentation during training (mosaic, HSV, scale, etc.) — this supplements Roboflow augmentation but does not replace it. Both are needed.
+**Why Roboflow augmentation is required:** With 36 classes and ~1200 raw images (~33 per class), the dataset is too small for effective training without augmentation. A 4x augmentation multiplier (creating 4 augmented copies per source image) produces ~5000 training images, which is sufficient. YOLO also applies its own online augmentation during training (mosaic, HSV, scale, etc.) — this supplements Roboflow augmentation but does not replace it. Both are needed.
 
-### Export
+### Export and split
 
 1. Format: **YOLOv8** (the folder structure Ultralytics expects)
 2. Download zip and extract:
@@ -306,6 +302,15 @@ cd ~/proj/digit-training
 rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 ```
+
+3. Run the local grouped split. Roboflow puts all images in `train/` — this script redistributes them into train/valid/test by video prefix, ensuring all 36 classes appear in every split:
+
+```bash
+source .venv/bin/activate
+python -m scripts.split
+```
+
+The script prints a detailed report showing group assignments, per-split class coverage, and any warnings. See `scripts/split.py` for the stratified algorithm.
 
 Verify the structure:
 
@@ -318,6 +323,24 @@ ls dataset/
 
 ## 8. Train the Model
 
+### Option A: Kaggle P100 (recommended)
+
+Kaggle's free P100 GPU is significantly faster than local MPS training. The notebook at [`kaggle/train-digit-tiles.ipynb`](../kaggle/train-digit-tiles.ipynb) handles everything — dataset loading, path fixup, training, validation, ONNX export, and output download.
+
+1. Prepare the dataset for upload:
+
+```bash
+cd ~/proj/digit-training
+zip -r dataset.zip dataset/
+```
+
+2. Upload `dataset.zip` as a [Kaggle Dataset](https://kaggle.com/datasets) (Private)
+3. Create a new notebook, add the dataset, select **GPU P100**
+4. Upload `kaggle/train-digit-tiles.ipynb` and **Run All**
+5. Download outputs from the **Output** tab: `best.pt`, `best.onnx`, `results.png`
+
+### Option B: Local (Apple Silicon)
+
 ```bash
 cd ~/proj/digit-training
 source .venv/bin/activate
@@ -325,37 +348,40 @@ source .venv/bin/activate
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=100 \
+  epochs=150 \
   imgsz=640 \
   device=mps \
+  batch=16 \
+  patience=50 \
+  cos_lr=True \
   fliplr=0.0 \
   flipud=0.0 \
   degrees=10 \
   hsv_v=0.5 \
-  close_mosaic=10
+  close_mosaic=15
 ```
 
-**What these flags mean:**
+### Key training flags
 
 | Flag | Value | Meaning |
 |---|---|---|
-| `data` | `dataset/data.yaml` | Points to your exported Roboflow dataset |
 | `model` | `yolo11n.pt` | Start from pretrained YOLOv11 nano (auto-downloads first time) |
-| `epochs` | `100` | Number of training passes. Check loss curves — increase if still improving. |
+| `epochs` | `150` | Number of training passes. Check loss curves — increase if still improving. |
 | `imgsz` | `640` | Input resolution — matches what the app uses |
-| `device` | `mps` | Use Apple Silicon GPU (Metal Performance Shaders) |
+| `patience` | `50` | Early stopping if validation loss plateaus for 50 epochs |
+| `cos_lr` | `True` | Cosine annealing learning rate for smoother convergence |
 | `fliplr` | `0.0` | **Disable horizontal flip.** YOLO default is 0.5 — flipped characters are invalid training data. |
 | `flipud` | `0.0` | Disable vertical flip (already default, but explicit for safety) |
-| `degrees` | `10` | Online rotation augmentation ±10° (applied dynamically each epoch, unlike Roboflow's static copies) |
-| `hsv_v` | `0.5` | Brightness variation ±50% for lighting robustness (default 0.4) |
-| `close_mosaic` | `10` | Disable mosaic augmentation for last 10 epochs (improves final precision) |
+| `degrees` | `10` | Online rotation augmentation ±10° (applied dynamically each epoch) |
+| `hsv_v` | `0.5` | Brightness variation ±50% for lighting robustness |
+| `close_mosaic` | `15` | Disable mosaic augmentation for last 15 epochs (improves final precision) |
 
-### Training time estimates (M3 Pro)
+### Training time estimates
 
-| Dataset size | Classes | Time per epoch | 50 epochs | 100 epochs |
-|---|---|---|---|---|
-| ~500 images | 10 | ~30s | ~25 min | ~50 min |
-| ~3700 images | 36 | ~4.5 min | ~3.8 hours | ~7.5 hours |
+| Platform | Dataset size | 150 epochs |
+|---|---|---|
+| Kaggle P100 | ~5000 images (36-class) | ~3.3 hours |
+| M3 Pro (MPS) | ~5000 images (36-class) | ~11 hours |
 
 Results are saved to: `runs/detect/train/` (or `train2/`, `train3/`, etc.)
 
@@ -558,10 +584,10 @@ When you need to improve the model (misdetections, new tile designs, different l
 
 1. Record new videos following the capture protocol in §3
 2. Extract frames: `ffmpeg -i new_video.MOV -vf fps=2 frames/new_%04d.jpg`
-3. Run the filter pipeline: `python -m scripts.filter`
-4. Annotate (automated or manual)
-5. Upload to the same Roboflow project
-6. Generate a **new version** in Roboflow with proper grouped splits
+3. Run the annotation pipeline: `python -m scripts.filter && python -m scripts.annotate && python -m scripts.convert && python -m scripts.qa`
+4. Upload to the same Roboflow project: `python -m scripts.upload`
+5. Review annotations in Roboflow UI, fix any errors
+6. Generate a **new version** in Roboflow (with augmentation, no manual splits)
 7. Export as YOLOv8 and download
 
 ### Retrain
@@ -574,25 +600,33 @@ source .venv/bin/activate
 rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 
-# Train with corrected args
+# Split locally by video prefix
+python -m scripts.split
+
+# Option A: Kaggle (recommended) — zip and upload
+zip -r dataset.zip dataset/
+# Upload to Kaggle, run kaggle/train-digit-tiles.ipynb
+# Download best.onnx from Output tab
+
+# Option B: Local training
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=100 \
+  epochs=150 \
   imgsz=640 \
   device=mps \
   fliplr=0.0 \
   flipud=0.0 \
   degrees=10 \
   hsv_v=0.5 \
-  close_mosaic=10
+  close_mosaic=15
 
 # Evaluate
 yolo detect predict \
   model=runs/detect/train/weights/best.pt \
   source=dataset/valid/images
 
-# Export and deploy
+# Export
 yolo export \
   model=runs/detect/train/weights/best.pt \
   format=onnx \
@@ -601,6 +635,7 @@ yolo export \
   half=False \
   batch=1
 
+# Deploy
 cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
 ```
 
@@ -622,7 +657,7 @@ cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-
 |---|---|---|
 | `fliplr` not set to 0.0 | YOLO default is 0.5 — mirrored "3", "7", "9", "J", "Z" corrupt training | Always pass `fliplr=0.0` explicitly |
 | Roboflow resize set to "Stretch" | 9:16 portrait frames squashed to 1:1, distorting characters | Use "Fit (white edges)" |
-| Random Roboflow split | Sequential video frames leak across train/val/test, inflating metrics | Split by video source/session |
+| Random Roboflow split | Sequential video frames leak across train/val/test, inflating metrics | Let Roboflow assign all to train, then run `scripts/split.py` locally |
 | Augmented val/test sets | Near-duplicate augmented copies inflate mAP | Apply augmentation to training set only |
 | Model not updating on device | Browser serves cached copy until next visit | StaleWhileRevalidate fetches update in background — reload once more |
 | Training on iPhone, deploying on iPad | Domain gap from different cameras | Film primarily on the deployment device |
@@ -659,18 +694,26 @@ python -m scripts.upload
 rm -rf dataset
 unzip ~/Downloads/digit-tiles-*.zip -d dataset
 
-# === TRAIN ===
+# === SPLIT BY VIDEO PREFIX ===
+python -m scripts.split
+
+# === TRAIN (Kaggle — recommended) ===
+zip -r dataset.zip dataset/
+# Upload dataset.zip to Kaggle, run kaggle/train-digit-tiles.ipynb
+# Download best.pt, best.onnx from Output tab
+
+# === TRAIN (local — alternative) ===
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=100 \
+  epochs=150 \
   imgsz=640 \
   device=mps \
   fliplr=0.0 \
   flipud=0.0 \
   degrees=10 \
   hsv_v=0.5 \
-  close_mosaic=10
+  close_mosaic=15
 
 # === EVALUATE ===
 yolo detect predict model=runs/detect/train/weights/best.pt source=dataset/valid/images

@@ -42,13 +42,14 @@ Record videos of tiles on iPad
 
 ```
 digit-training/
-├── scripts/                    # Annotation pipeline
+├── scripts/                    # Annotation + data pipeline
 │   ├── config.py               #   36-class mapping, API config, annotation prompt
 │   ├── filter.py               #   Blur detection + perceptual hash dedup
 │   ├── annotate.py             #   Gemini annotation via OpenRouter
 │   ├── convert.py              #   Gemini JSON -> YOLO label format
 │   ├── qa.py                   #   Automated QA checks + visualization
 │   ├── upload.py               #   Roboflow batch upload
+│   ├── split.py                #   Stratified grouped split by video prefix
 │   └── requirements.txt        #   Pipeline dependencies
 ├── docs/
 │   ├── training.md             #   Comprehensive end-to-end training guide
@@ -120,28 +121,41 @@ python -m scripts.qa
 python -m scripts.upload
 ```
 
-After upload, use the Roboflow UI to review annotations, generate a dataset version, and export in YOLOv8 format.
+After upload, use the Roboflow UI to review annotations, generate a dataset version (with augmentation, **no manual splits**), and export in YOLOv8 format. Then run the local split:
+
+```bash
+# Download and extract the Roboflow export
+rm -rf dataset
+unzip ~/Downloads/digit-tiles-*.zip -d dataset
+
+# Re-split by video prefix (Roboflow puts everything in train/)
+python -m scripts.split
+```
 
 ## Training
+
+Training runs on **Kaggle P100 GPU** (~3.3 hours for 150 epochs). See [`kaggle/train-digit-tiles.ipynb`](kaggle/train-digit-tiles.ipynb) for the full notebook.
+
+Alternatively, train locally on Apple Silicon:
 
 ```bash
 yolo detect train \
   data=dataset/data.yaml \
   model=yolo11n.pt \
-  epochs=100 \
+  epochs=150 \
   imgsz=640 \
   device=mps \
   fliplr=0.0 \
   flipud=0.0 \
   degrees=10 \
   hsv_v=0.5 \
-  close_mosaic=10
+  close_mosaic=15
 ```
 
 Key constraints:
 - **`fliplr=0.0`** is mandatory — mirrored characters (3, 7, 9, J, Z) are invalid training data
 - **`imgsz=640`** must match export size for consistent inference
-- **Grouped splits** — sequential video frames must stay in the same split to avoid data leakage
+- **Grouped splits** via `scripts/split.py` — sequential video frames must stay in the same split to avoid data leakage
 
 See [`docs/training.md`](docs/training.md) for the full guide covering video capture, evaluation, ONNX export, app integration, device testing, and deployment.
 
