@@ -2,6 +2,16 @@
 
 Training pipeline for a custom **YOLOv11n** object detection model that recognizes **digits (0-9) and letters (A-Z)** on physical tiles. The model runs in-browser via ONNX Runtime WASM, powering real-time tile detection in the [Superbuilders](https://github.com/seanflanagan/superbuilders) iPad app.
 
+## Results
+
+The current model (**train3**) achieves **0.995 mAP50** and **0.973 mAP50-95** on validation, trained for 150 epochs on Kaggle P100. ONNX export is 10.6 MB.
+
+| | |
+|---|---|
+| ![Training curves](docs/train3-results.png) | ![Confusion matrix](docs/train3-confusion-matrix.png) |
+
+See the [training guide](docs/training.md#current-model) for full metrics and methodology.
+
 ## How It Works
 
 ```
@@ -74,7 +84,8 @@ digit-training/
 
 ```bash
 # Clone and create venv
-cd ~/proj/digit-training
+git clone git@github.com:FlanaganSe/ml-digit-training.git
+cd ml-digit-training
 python3 -m venv .venv
 source .venv/bin/activate
 
@@ -187,6 +198,12 @@ The annotation pipeline uses **Gemini Flash Lite** via OpenRouter with structure
 | Inference runtime | ONNX Runtime Web (WASM) |
 | Training hardware | Apple Silicon (MPS) or Kaggle (P100) |
 | Deployment target | iPad Safari via Cloudflare Pages |
+
+## Documentation
+
+- **[Training Guide](docs/training.md)** — End-to-end walkthrough: video capture, frame extraction, annotation, Roboflow workflow, training, evaluation, ONNX export, app integration, and device testing.
+- **[Kaggle Notebook](kaggle/train-digit-tiles.ipynb)** — Ready-to-run training notebook for Kaggle P100 GPU.
+- **[Class Config](scripts/config.py)** — 36-class mapping, API configuration, and annotation prompt.
 
 ## Known Pitfalls
 
