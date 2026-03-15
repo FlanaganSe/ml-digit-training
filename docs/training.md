@@ -4,6 +4,29 @@ End-to-end guide for training a custom YOLOv11n tile detection model and deployi
 
 ---
 
+## Current Model
+
+**train3** — YOLOv11n, 36 classes (0-9 + A-Z), trained 150 epochs on Kaggle P100.
+
+| Metric | Value |
+|---|---|
+| mAP50 | 0.995 |
+| mAP50-95 | 0.973 |
+| Precision | 0.993 |
+| Recall | 0.998 |
+
+ONNX: 10.6 MB, output shape `[1, 40, 8400]`, opset 17, float32. Deployed to `~/proj/superbuilders/public/models/digit-tiles.onnx`.
+
+### Training curves
+
+![Training results](train3-results.png)
+
+### Confusion matrix (validation set)
+
+![Confusion matrix](train3-confusion-matrix.png)
+
+---
+
 ## Table of Contents
 
 1. [One-Time Setup](#1-one-time-setup)
@@ -13,14 +36,14 @@ End-to-end guide for training a custom YOLOv11n tile detection model and deployi
 5. [Filter Frames](#5-filter-frames)
 6. [Annotate Images](#6-annotate-images)
 7. [Roboflow: Upload, Review, Version](#7-roboflow-upload-review-version)
-8. [Train the Model](#9-train-the-model)
-9. [Evaluate Training Results](#10-evaluate-training-results)
-10. [Export to ONNX](#11-export-to-onnx)
-11. [Integrate into the App](#12-integrate-into-the-app)
-12. [Test Locally in Browser](#13-test-locally-in-browser)
-13. [Test on iPad / iPhone](#14-test-on-ipad--iphone)
-14. [Deploy](#15-deploy)
-15. [Retraining (Adding More Data)](#16-retraining-adding-more-data)
+8. [Train the Model](#8-train-the-model)
+9. [Evaluate Training Results](#9-evaluate-training-results)
+10. [Export to ONNX](#10-export-to-onnx)
+11. [Integrate into the App](#11-integrate-into-the-app)
+12. [Test Locally in Browser](#12-test-locally-in-browser)
+13. [Test on iPad / iPhone](#13-test-on-ipad--iphone)
+14. [Deploy](#14-deploy)
+15. [Retraining (Adding More Data)](#15-retraining-adding-more-data)
 
 ---
 
@@ -271,6 +294,8 @@ Roboflow's random split leaks near-duplicate frames across train/val/test (seque
 
 **Ensure augmentations are applied to training images only**, not validation or test. Augmented val/test sets inflate metrics.
 
+**Why Roboflow augmentation is required:** With 36 classes and ~1200 raw images (~33 per class), the dataset is too small for effective training without augmentation. A 3x augmentation multiplier produces ~3600-5000 training images, which is sufficient. YOLO also applies its own online augmentation during training (mosaic, HSV, scale, etc.) — this supplements Roboflow augmentation but does not replace it. Both are needed.
+
 ### Export
 
 1. Format: **YOLOv8** (the folder structure Ultralytics expects)
@@ -416,22 +441,20 @@ This creates `runs/detect/train/weights/best.onnx` (~10 MB).
 
 ## 11. Integrate into the App
 
-**Use a versioned filename** to bust the service worker cache:
+Copy the ONNX model to the app's public directory:
 
 ```bash
-cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-v5.onnx
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
 ```
 
-Then update the model path in `~/proj/superbuilders/src/cv/onnx-recognition.ts` to match the new filename.
-
-The CacheFirst service worker will serve the old cached model forever if the filename doesn't change. Always use a new filename when deploying a retrained model.
+The app uses a **StaleWhileRevalidate** caching strategy (not CacheFirst), so the browser fetches a fresh copy in the background on the next load. No versioned filename is needed — overwriting `digit-tiles.onnx` is sufficient.
 
 The inference worker reads class count from the ONNX output tensor dimensions automatically — no other code change needed when swapping models.
 
 ### Model size check
 
 ```bash
-ls -lh ~/proj/superbuilders/public/models/digit-tiles-v5.onnx
+ls -lh ~/proj/superbuilders/public/models/digit-tiles.onnx
 ```
 
 Should be ~10–12 MB. The PWA caches models up to 30 MB, so this is fine.
@@ -523,7 +546,7 @@ pnpm preview  # Verify the production build locally
 
 Push to GitHub and the CI/CD pipeline deploys to Cloudflare Pages automatically.
 
-The PWA service worker caches the model with a CacheFirst strategy, so after the first load on a device, the model loads from cache instantly on subsequent visits. This is why **versioned model filenames are essential** — without a new filename, cached devices never get the updated model.
+The PWA service worker caches the model with a StaleWhileRevalidate strategy — cached devices serve the existing model instantly while fetching the updated version in the background. The new model will be used on the next visit.
 
 ---
 
@@ -569,7 +592,7 @@ yolo detect predict \
   model=runs/detect/train/weights/best.pt \
   source=dataset/valid/images
 
-# Export and deploy (use versioned filename!)
+# Export and deploy
 yolo export \
   model=runs/detect/train/weights/best.pt \
   format=onnx \
@@ -578,8 +601,7 @@ yolo export \
   half=False \
   batch=1
 
-cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-vN.onnx
-# Update the model path in src/cv/onnx-recognition.ts
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
 ```
 
 ### Tips for iterative improvement
@@ -602,7 +624,7 @@ cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-
 | Roboflow resize set to "Stretch" | 9:16 portrait frames squashed to 1:1, distorting characters | Use "Fit (white edges)" |
 | Random Roboflow split | Sequential video frames leak across train/val/test, inflating metrics | Split by video source/session |
 | Augmented val/test sets | Near-duplicate augmented copies inflate mAP | Apply augmentation to training set only |
-| Same model filename on deploy | CacheFirst service worker serves stale model | Use versioned filenames |
+| Model not updating on device | Browser serves cached copy until next visit | StaleWhileRevalidate fetches update in background — reload once more |
 | Training on iPhone, deploying on iPad | Domain gap from different cameras | Film primarily on the deployment device |
 | Insufficient negatives | False positives on hands, surfaces, clutter | Include 10% hard negatives |
 | Severe class imbalance | Rare classes have low recall | Balance with targeted filming |
@@ -657,8 +679,7 @@ open runs/detect/train/results.png
 
 # === EXPORT + DEPLOY ===
 yolo export model=runs/detect/train/weights/best.pt format=onnx imgsz=640 opset=17 half=False batch=1
-cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles-vN.onnx
-# Update model path in src/cv/onnx-recognition.ts
+cp runs/detect/train/weights/best.onnx ~/proj/superbuilders/public/models/digit-tiles.onnx
 
 # === TEST ON DEVICE ===
 cd ~/proj/superbuilders

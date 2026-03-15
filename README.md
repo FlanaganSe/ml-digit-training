@@ -51,7 +51,11 @@ digit-training/
 │   ├── upload.py               #   Roboflow batch upload
 │   └── requirements.txt        #   Pipeline dependencies
 ├── docs/
-│   └── training.md             #   Comprehensive end-to-end training guide
+│   ├── training.md             #   Comprehensive end-to-end training guide
+│   ├── train3-results.png      #   Training curves (loss, mAP over epochs)
+│   └── train3-confusion-matrix.png  #   Normalized confusion matrix
+├── kaggle/
+│   └── train-digit-tiles.ipynb #   Kaggle P100 training notebook (upload + run)
 ├── frames/                     #   Extracted video frames (git-ignored)
 │   └── rejected/               #   Blurry/duplicate frames
 ├── auto_labels/                #   Pipeline output (git-ignored)
