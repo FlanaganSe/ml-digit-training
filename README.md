@@ -214,3 +214,8 @@ The annotation pipeline uses **Gemini Flash Lite** via OpenRouter with structure
 | Random train/val split | Near-duplicate leakage inflates metrics | Split by video source |
 | Augmented val/test sets | Duplicate copies inflate mAP | Augment training set only |
 | Horizontal/vertical flip augmentation | Invalid character representations | Disable in both Roboflow and YOLO |
+
+## Closing thoughts:
+
+- I would not recommend training on an M3 mac again. Kaggle was a far better experience
+- I would not recommend annotating cards manually except with small datasets and for testing periods. Gemini flash annotations were equally accurate and the process to manually annotate in roboflow took ~1 hour for 100 cards. Gemini-flash could do 2000 images in <30 minutes. 
