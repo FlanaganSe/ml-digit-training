@@ -6,5 +6,8 @@ auto_labels/
 runs/
 frames/
 dataset/
+dataset.zip
 *.onnx
+*.pt
 .DS_Store
+.claude/
