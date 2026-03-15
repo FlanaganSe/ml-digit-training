@@ -1,6 +1,6 @@
 # Model Training Guide
 
-End-to-end guide for training a custom YOLOv11n tile detection model and deploying it into the Superbuilders app. Covers both digit-only (10-class) and full character (36-class: digits 0-9 + letters A-Z) models.
+End-to-end guide for training a custom YOLOv11n tile detection model and deploying it into the TileSight demo app. Covers both digit-only (10-class) and full character (36-class: digits 0-9 + letters A-Z) models.
 
 ---
 

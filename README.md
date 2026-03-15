@@ -1,6 +1,6 @@
 # Tile Character Detection — Training Pipeline
 
-Training pipeline for a **YOLOv11n** object detection model that recognizes **36 alphanumeric characters (0-9, A-Z)** on physical letter tiles. The model exports to ONNX (~10 MB) and runs in-browser via ONNX Runtime WASM, powering real-time tile detection in the [Superbuilders](https://github.com/seanflanagan/superbuilders) iPad app.
+Training pipeline for a **YOLOv11n** object detection model that recognizes **36 alphanumeric characters (0-9, A-Z)** on physical letter tiles. The model exports to ONNX (~10 MB) and runs in-browser via ONNX Runtime WASM, powering real-time tile detection in [TileSight](https://github.com/FlanaganSe/superbuilders-numberGame) — a demo iPad app where kids place physical tiles to answer math questions. TileSight is functional but was never fully polished for production; the training pipeline here is the more complete piece of work.
 
 ## Results
 
@@ -45,7 +45,7 @@ Record videos of tiles on iPad
  yolo export format=onnx  ONNX for browser inference (~10 MB)
         |
         v
- Superbuilders app        Real-time detection on iPad Safari via WASM
+ TileSight app            Real-time detection on iPad Safari via WASM
 ```
 
 ## Project Structure
